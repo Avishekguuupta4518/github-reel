@@ -239,18 +239,18 @@ export default function Home() {
 
               <div className="flex-1">
                 <p className="font-bold text-sm text-white mb-1">
-                  {errorDetails.title}
+                  {errorDetails?.title}
                 </p>
 
                 <p className="text-xs text-neutral-400 mb-2">
-                  {errorDetails.message}
+                  {errorDetails?.message}
                 </p>
 
                 <p className="text-xs text-neutral-500">
-                  {errorDetails.suggestion}
+                  {errorDetails?.suggestion}
                 </p>
 
-                {errorDetails.showTokenHint && !showTokenInput && (
+                {errorDetails?.showTokenHint && !showTokenInput && (
                   <button
                     type="button"
                     onClick={() => {
