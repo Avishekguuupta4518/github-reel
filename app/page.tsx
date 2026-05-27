@@ -15,7 +15,6 @@ import {
   ChevronDown,
   ChevronUp,
   Lock,
-  RefreshCw,
   CheckCircle2,
   XCircle,
   Sun,
@@ -156,43 +155,43 @@ export default function Home() {
     }
   };
 
-  const getErrorDetails = () => {
-    if (!error) return null;
+  // const getErrorDetails = () => {
+  //   if (!error) return null;
 
-    switch (error.type) {
-      case "rate_limit":
-        return {
-          title: "Rate Limit Exceeded",
-          message: error.message,
-          suggestion: token
-            ? "Try again in a few minutes, or check your token permissions."
-            : "Add a GitHub token below for 5000 requests/hour instead of 60.",
-          showTokenHint: !token,
-        };
-      case "not_found":
-        return {
-          title: "User Not Found",
-          message: error.message,
-          suggestion:
-            'Check the username spelling. Try "demo" to see the experience.',
-          showTokenHint: false,
-        };
-      case "auth":
-        return {
-          title: "Authentication Error",
-          message: error.message,
-          suggestion: "Your token may be invalid or expired. Please check it.",
-          showTokenHint: true,
-        };
-      default:
-        return {
-          title: "Something Went Wrong",
-          message: error.message,
-          suggestion: 'Please try again. If the problem persists, try "demo".',
-          showTokenHint: false,
-        };
-    }
-  };
+  //   switch (error.type) {
+  //     case "rate_limit":
+  //       return {
+  //         title: "Rate Limit Exceeded",
+  //         message: error.message,
+  //         suggestion: token
+  //           ? "Try again in a few minutes, or check your token permissions."
+  //           : "Add a GitHub token below for 5000 requests/hour instead of 60.",
+  //         showTokenHint: !token,
+  //       };
+  //     case "not_found":
+  //       return {
+  //         title: "User Not Found",
+  //         message: error.message,
+  //         suggestion:
+  //           'Check the username spelling. Try "demo" to see the experience.',
+  //         showTokenHint: false,
+  //       };
+  //     case "auth":
+  //       return {
+  //         title: "Authentication Error",
+  //         message: error.message,
+  //         suggestion: "Your token may be invalid or expired. Please check it.",
+  //         showTokenHint: true,
+  //       };
+  //     default:
+  //       return {
+  //         title: "Something Went Wrong",
+  //         message: error.message,
+  //         suggestion: 'Please try again. If the problem persists, try "demo".',
+  //         showTokenHint: false,
+  //       };
+  //   }
+  // };
 
   if (showReel && reelData) {
     return (
@@ -200,7 +199,7 @@ export default function Home() {
     );
   }
 
-  const errorDetails = getErrorDetails();
+  // const errorDetails = getErrorDetails();
 
   const isDark = theme === "dark";
 
@@ -237,7 +236,7 @@ export default function Home() {
                 }`}
               />
 
-              <div className="flex-1">
+              {/* <div className="flex-1">
                 <p className="font-bold text-sm text-white mb-1">
                   {errorDetails?.title}
                 </p>
@@ -270,8 +269,8 @@ export default function Home() {
                 >
                   Close
                 </button>
-              </div>
-            </div>
+              </div> */}
+            </div>  
           </div>
         </motion.div>
       </div>
