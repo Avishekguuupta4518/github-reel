@@ -1,0 +1,29 @@
+{
+    "name": "GithubReel 2025",
+    "short_name": "GithubReel",
+    "description": "Experience your coding journey through animated stories contribution insights and cinematic visuals.",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#000000",
+    "theme_color": "#0a0a0a",
+    "orientation": "portrait",
+    "icons": [
+        {
+            "src": "/favicon.ico",
+            "sizes": "64x64",
+            "type": "image/x-icon"
+        },
+        {
+            "sizes": "1200x630",
+            "type": "image/png",
+            "purpose": "any"
+        }
+    ],
+    "categories": [
+        "developer tools",
+        "productivity",
+        "utilities"
+    ],
+    "lang": "en",
+    "dir": "ltr"
+}

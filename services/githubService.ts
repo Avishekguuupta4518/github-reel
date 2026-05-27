@@ -1,0 +1,628 @@
+import {
+  GithubReelData,
+  Language,
+  Repository,
+  ContributionBreakdown,
+  CommunityStats,
+} from "../types";
+import { MOCK_DATA } from "../constants";
+import {
+  calculateLanguageScores,
+  getTopLanguages,
+  calculateRepoScore,
+  calculateArchetype,
+  calculateProductivity,
+} from "./scoringAlgorithms";
+
+const GITHUB_API_BASE = "/api/github";
+const makeGitHubUrl = (endpoint: string) =>
+  `${GITHUB_API_BASE}?endpoint=${encodeURIComponent(endpoint)}`;
+const CONTRIB_API = "https://github-contributions-api.jogruber.de/v4";
+
+const fetchContributionsWithGraphQL = async (
+  username: string,
+  headers: HeadersInit,
+): Promise<{
+  contributions: { date: string; count: number }[];
+  total: Record<string, number>;
+  prCount: number;
+  issueCount: number;
+  reviewCount: number;
+}> => {
+  const query = `
+        query($username: String!) {
+            user(login: $username) {
+                contributionsCollection(from: "2025-01-01T00:00:00Z", to: "2025-12-31T23:59:59Z") {
+                    contributionCalendar {
+                        totalContributions
+                        weeks {
+                            contributionDays {
+                                date
+                                contributionCount
+                            }
+                        }
+                    }
+                    totalPullRequestContributions
+                    totalIssueContributions
+                    totalPullRequestReviewContributions
+                }
+            }
+        }
+    `;
+
+  try {
+    const response = await fetch("/api/github", {
+      method: "POST",
+      headers: {
+        ...headers,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query, variables: { username } }),
+    });
+
+    if (!response.ok) {
+      console.warn("GraphQL request failed, falling back to public API");
+      return {
+        contributions: [],
+        total: {},
+        prCount: -1,
+        issueCount: -1,
+        reviewCount: -1,
+      };
+    }
+
+    const data = await response.json();
+
+    if (data.errors) {
+      console.warn("GraphQL errors:", data.errors);
+      return {
+        contributions: [],
+        total: {},
+        prCount: -1,
+        issueCount: -1,
+        reviewCount: -1,
+      };
+    }
+
+    const collection = data.data?.user?.contributionsCollection;
+    const calendar = collection?.contributionCalendar;
+    if (!calendar)
+      return {
+        contributions: [],
+        total: {},
+        prCount: -1,
+        issueCount: -1,
+        reviewCount: -1,
+      };
+
+    const contributions: { date: string; count: number }[] = [];
+    calendar.weeks.forEach((week: any) => {
+      week.contributionDays.forEach((day: any) => {
+        contributions.push({
+          date: day.date,
+          count: day.contributionCount,
+        });
+      });
+    });
+
+    return {
+      contributions,
+      total: { "2025": calendar.totalContributions },
+      prCount: collection.totalPullRequestContributions || 0,
+      issueCount: collection.totalIssueContributions || 0,
+      reviewCount: collection.totalPullRequestReviewContributions || 0,
+    };
+  } catch (error) {
+    console.warn("Failed to fetch contributions via GraphQL:", error);
+    return {
+      contributions: [],
+      total: {},
+      prCount: -1,
+      issueCount: -1,
+      reviewCount: -1,
+    };
+  }
+};
+
+export const fetchUserStory = async (
+  username: string,
+  token?: string,
+): Promise<GithubReelData> => {
+  if (username.toLowerCase() === "demo") {
+    return new Promise((resolve) => setTimeout(() => resolve(MOCK_DATA), 1500));
+  }
+
+  const headers: HeadersInit = {
+    Accept: "application/vnd.github.v3+json",
+  };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  try {
+    const userRes = await fetch(makeGitHubUrl(`/users/${username}`), {
+      headers,
+    });
+
+    if (userRes.status === 404) {
+      throw new Error(
+        `User "${username}" not found. Check the spelling and try again.`,
+      );
+    }
+    if (userRes.status === 401) {
+      throw new Error(
+        "Invalid GitHub token. Please check your token and try again.",
+      );
+    }
+    if (userRes.status === 403) {
+      const rateLimitReset = userRes.headers.get("X-RateLimit-Reset");
+      const resetTime = rateLimitReset
+        ? new Date(parseInt(rateLimitReset) * 1000).toLocaleTimeString()
+        : "soon";
+      throw new Error(
+        `API Rate Limit Exceeded. Resets at ${resetTime}. Add a GitHub token for 5000 requests/hour.`,
+      );
+    }
+    if (!userRes.ok) {
+      throw new Error(`Failed to fetch user data. (Status: ${userRes.status})`);
+    }
+
+    const user = await userRes.json();
+
+    type ContribData = {
+      contributions: { date: string; count: number }[];
+      total: Record<string, number>;
+      prCount?: number;
+      issueCount?: number;
+      reviewCount?: number;
+    };
+
+    const contributionsPromise: Promise<ContribData> = token
+      ? fetchContributionsWithGraphQL(username, headers)
+      : fetch(
+          `/api/github?url=${encodeURIComponent(`${CONTRIB_API}/${username}?y=2025`)}`,
+        ).then((res) =>
+          res.ok ? res.json() : { contributions: [], total: {} },
+        );
+
+    const reposEndpoint = token
+      ? makeGitHubUrl(
+          `/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member&visibility=all`,
+        )
+      : makeGitHubUrl(
+          `/users/${username}/repos?per_page=100&sort=pushed&type=all`,
+        );
+
+    const [
+      reposRes,
+      contribData,
+      eventsRes,
+      prSearchRes,
+      issueSearchRes,
+      reviewSearchRes,
+    ] = await Promise.all([
+      fetch(reposEndpoint, { headers }),
+      contributionsPromise,
+      fetch(makeGitHubUrl(`/users/${username}/events?per_page=100`), {
+        headers,
+      }),
+      fetch(
+        makeGitHubUrl(
+          `/search/issues?q=author:${username}+type:pr+created:2025-01-01..2025-12-31&per_page=1`,
+        ),
+        { headers },
+      ),
+      fetch(
+        makeGitHubUrl(
+          `/search/issues?q=author:${username}+type:issue+created:2025-01-01..2025-12-31&per_page=1`,
+        ),
+        { headers },
+      ),
+      fetch(
+        makeGitHubUrl(
+          `/search/issues?q=reviewed-by:${username}+-author:${username}+type:pr+created:2025-01-01..2025-12-31&per_page=1`,
+        ),
+        { headers },
+      ),
+    ]);
+
+    let repos: any[] = [];
+    if (reposRes.ok) {
+      repos = await reposRes.json();
+    } else {
+      console.warn(`Failed to fetch repos: ${reposRes.status}`);
+    }
+
+    const events = eventsRes.ok ? await eventsRes.json() : [];
+
+    let prCount = 0;
+    if (prSearchRes.ok) {
+      const prData = await prSearchRes.json();
+      prCount = prData.total_count || 0;
+    }
+
+    let issueCount = 0;
+    if (issueSearchRes.ok) {
+      const issueData = await issueSearchRes.json();
+      issueCount = issueData.total_count || 0;
+    }
+
+    let reviewCount = 0;
+    if (reviewSearchRes.ok) {
+      const reviewData = await reviewSearchRes.json();
+      reviewCount = reviewData.total_count || 0;
+    }
+
+    const velocityData: { date: string; commits: number }[] = [];
+    let totalCommits = 0;
+    let currentStreak = 0;
+    let maxStreak = 0;
+    const weekdayStats = [0, 0, 0, 0, 0, 0, 0];
+
+    const yearData = contribData.contributions || [];
+    yearData.sort(
+      (a: any, b: any) =>
+        new Date(a.date).getTime() - new Date(b.date).getTime(),
+    );
+
+    for (const day of yearData) {
+      const count = day.count || 0;
+      totalCommits += count;
+
+      const dateObj = new Date(day.date);
+      velocityData.push({
+        date: dateObj.toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+        }),
+        commits: count,
+      });
+
+      if (count > 0) weekdayStats[dateObj.getDay()] += count;
+
+      if (count > 0) {
+        currentStreak++;
+        if (currentStreak > maxStreak) maxStreak = currentStreak;
+      } else {
+        currentStreak = 0;
+      }
+    }
+
+    const days = [
+      "Sundays",
+      "Mondays",
+      "Tuesdays",
+      "Wednesdays",
+      "Thursdays",
+      "Fridays",
+      "Saturdays",
+    ];
+    const maxDayIndex = weekdayStats.indexOf(Math.max(...weekdayStats));
+    const busiestDay = days[maxDayIndex];
+
+    const hourCounts: Record<number, number> = {};
+
+    if (Array.isArray(events)) {
+      events.forEach((e: any) => {
+        const date = new Date(e.created_at);
+        const h = date.getHours();
+        hourCounts[h] = (hourCounts[h] || 0) + 1;
+      });
+    }
+
+    const contributionBreakdown: ContributionBreakdown = {
+      commits: totalCommits,
+      prs: prCount,
+      issues: issueCount,
+      reviews: reviewCount,
+    };
+
+    const langColors: Record<string, string> = {
+      TypeScript: "#3178C6",
+      JavaScript: "#F7DF1E",
+      HTML: "#e34c26",
+      CSS: "#563d7c",
+      Vue: "#41b883",
+      Svelte: "#ff3e00",
+      SCSS: "#c6538c",
+      Less: "#1d365d",
+      Astro: "#ff5a03",
+      MDX: "#1b1f24",
+      Rust: "#dea584",
+      C: "#555555",
+      "C++": "#f34b7d",
+      "C#": "#178600",
+      Go: "#00ADD8",
+      Zig: "#f7a41d",
+      Assembly: "#6E4C13",
+      "Objective-C": "#438eff",
+      Java: "#b07219",
+      Kotlin: "#A97BFF",
+      Scala: "#c22d40",
+      Groovy: "#4298b8",
+      Clojure: "#db5855",
+      Python: "#3572A5",
+      Ruby: "#701516",
+      PHP: "#4F5D95",
+      Perl: "#0298c3",
+      Lua: "#000080",
+      R: "#198CE7",
+      Julia: "#a270ba",
+      Elixir: "#6e4a7e",
+      Erlang: "#B83998",
+      Haskell: "#5e5086",
+      OCaml: "#3be133",
+      Swift: "#F05138",
+      Dart: "#00B4AB",
+      "Objective-C++": "#6866fb",
+      "Jupyter Notebook": "#DA5B0B",
+      MATLAB: "#e16737",
+      SAS: "#B34936",
+      Shell: "#89e051",
+      PowerShell: "#012456",
+      Dockerfile: "#384d54",
+      Makefile: "#427819",
+      Nix: "#7e7eff",
+      HCL: "#844fba",
+      SQL: "#e38c00",
+      PLpgSQL: "#336790",
+      TSQL: "#e38c00",
+      GraphQL: "#e10098",
+      Markdown: "#083fa1",
+      TeX: "#3D6117",
+      Org: "#77aa99",
+      "F#": "#b845fc",
+      Crystal: "#000100",
+      Nim: "#ffc200",
+      V: "#4f87c4",
+      Solidity: "#AA6746",
+      Move: "#4a137a",
+      Cairo: "#ff4c00",
+      WASM: "#654ff0",
+      WebAssembly: "#654ff0",
+      CoffeeScript: "#244776",
+      Elm: "#60B5CC",
+      PureScript: "#1D222D",
+      ReasonML: "#ff5847",
+      Raku: "#0000fb",
+      Fortran: "#4d41b1",
+      COBOL: "#005ca5",
+      Ada: "#02f88c",
+      D: "#ba595e",
+      Vala: "#a56de2",
+      Hack: "#878787",
+      ActionScript: "#882B0F",
+    };
+
+    let totalStars = 0;
+
+    const repoScores: { repo: any; score: number }[] = [];
+
+    if (Array.isArray(repos)) {
+      repos.forEach((repo: any) => {
+        totalStars += repo.stargazers_count;
+        const repoScore = calculateRepoScore(repo);
+        repoScores.push({ repo, score: repoScore });
+      });
+    }
+
+    repoScores.sort((a, b) => b.score - a.score);
+
+    const ownedRepoScores = repoScores.filter(
+      (r) => r.repo.owner?.login?.toLowerCase() === username.toLowerCase(),
+    );
+
+    const year2025 = new Date("2025-01-01");
+    const repos2025 = ownedRepoScores.filter(
+      (r) =>
+        new Date(r.repo.pushed_at) >= year2025 &&
+        !r.repo.archived &&
+        !r.repo.fork,
+    );
+
+    repos2025.sort(
+      (a, b) => (b.repo.stargazers_count || 0) - (a.repo.stargazers_count || 0),
+    );
+
+    const candidateSource =
+      repos2025.length > 0
+        ? repos2025
+        : ownedRepoScores.filter((r) => !r.repo.archived);
+    const topCandidates = candidateSource.slice(0, 5);
+
+    const candidatesWithCommits: {
+      repo: any;
+      score: number;
+      commitCount: number;
+    }[] = [];
+
+    for (const candidate of topCandidates) {
+      try {
+        const repoOwner = candidate.repo.owner?.login || username;
+        const commitsRes = await fetch(
+          makeGitHubUrl(
+            `/repos/${repoOwner}/${candidate.repo.name}/commits?author=${username}&since=2025-01-01T00:00:00Z&per_page=100`,
+          ),
+          { headers },
+        );
+
+        if (commitsRes.ok) {
+          const commits = await commitsRes.json();
+          if (Array.isArray(commits) && commits.length > 0) {
+            candidatesWithCommits.push({
+              ...candidate,
+              commitCount: commits.length,
+            });
+          }
+        }
+      } catch (e) {
+        console.warn(`Failed to check commits for ${candidate.repo.name}:`, e);
+      }
+    }
+
+    let bestRepo: any = null;
+    if (candidatesWithCommits.length > 0) {
+      candidatesWithCommits.sort((a, b) => {
+        const scoreA =
+          a.commitCount * 3 +
+          (a.repo.stargazers_count || 0) * 2 +
+          (a.repo.forks_count || 0) * 2;
+        const scoreB =
+          b.commitCount * 3 +
+          (b.repo.stargazers_count || 0) * 2 +
+          (b.repo.forks_count || 0) * 2;
+        return scoreB - scoreA;
+      });
+      bestRepo = candidatesWithCommits[0].repo;
+    }
+
+    if (!bestRepo && topCandidates.length > 0) {
+      const ownedRepo = topCandidates.find(
+        (c) => c.repo.owner?.login?.toLowerCase() === username.toLowerCase(),
+      );
+
+      if (ownedRepo) {
+        bestRepo = ownedRepo.repo;
+      } else {
+        bestRepo = topCandidates[0].repo;
+      }
+    }
+
+    const ownedRepos = repos.filter(
+      (r: any) => r.owner?.login?.toLowerCase() === username.toLowerCase(),
+    );
+    const langScoreMap = calculateLanguageScores(ownedRepos);
+    const topLangScores = getTopLanguages(langScoreMap, 3);
+
+    const topLangWeight = topLangScores.reduce((sum, l) => sum + l.weight, 0);
+
+    const topLanguages: Language[] = topLangScores.map((lang) => {
+      const normalizedPercentage =
+        topLangWeight > 0 ? (lang.weight / topLangWeight) * 100 : 0;
+
+      return {
+        name: lang.name,
+        count: lang.repoCount,
+        percentage: Math.round(normalizedPercentage),
+        color: langColors[lang.name] || "#A3A3A3",
+      };
+    });
+
+    if (topLanguages.length > 0) {
+      const sum = topLanguages.reduce((s, l) => s + l.percentage, 0);
+      if (sum !== 100 && sum > 0) {
+        topLanguages[0].percentage += 100 - sum;
+      }
+    }
+
+    if (topLanguages.length === 0) {
+      topLanguages.push({
+        name: "Polyglot",
+        count: 1,
+        percentage: 100,
+        color: "#FFFFFF",
+      });
+    }
+
+    const topRepo: Repository = bestRepo
+      ? {
+          name: bestRepo.name,
+          description: bestRepo.description || "No description provided.",
+          stars: bestRepo.stargazers_count,
+          language: bestRepo.language || "Unknown",
+          topics: bestRepo.topics || [],
+          url: bestRepo.html_url,
+        }
+      : {
+          name: "No Public Repos",
+          description: "Start coding to write history.",
+          stars: 0,
+          language: "N/A",
+          topics: [],
+          url: "",
+        };
+
+    const topRepos: Repository[] = [];
+
+    if (bestRepo) {
+      topRepos.push({
+        name: bestRepo.name,
+        description: bestRepo.description || "No description provided.",
+        stars: bestRepo.stargazers_count,
+        language: bestRepo.language || "Unknown",
+        topics: bestRepo.topics || [],
+        url: bestRepo.html_url,
+      });
+    }
+
+    for (const c of candidatesWithCommits) {
+      if (topRepos.length >= 5) break;
+      if (
+        bestRepo &&
+        c.repo.name === bestRepo.name &&
+        c.repo.owner?.login === bestRepo.owner?.login
+      ) {
+        continue;
+      }
+      topRepos.push({
+        name: c.repo.name,
+        description: c.repo.description || "No description provided.",
+        stars: c.repo.stargazers_count,
+        language: c.repo.language || "Unknown",
+        topics: c.repo.topics || [],
+        url: c.repo.html_url,
+      });
+    }
+
+    for (const c of topCandidates) {
+      if (topRepos.length >= 5) break;
+      if (topRepos.some((r) => r.name === c.repo.name)) continue;
+      topRepos.push({
+        name: c.repo.name,
+        description: c.repo.description || "No description provided.",
+        stars: c.repo.stargazers_count,
+        language: c.repo.language || "Unknown",
+        topics: c.repo.topics || [],
+        url: c.repo.html_url,
+      });
+    }
+
+    const productivity = calculateProductivity(hourCounts);
+
+    const communityStats: CommunityStats = {
+      followers: user.followers,
+      following: user.following,
+      publicRepos: user.public_repos,
+      totalStars: totalStars,
+    };
+
+    const archetype = calculateArchetype(
+      contributionBreakdown,
+      communityStats,
+      totalCommits,
+      productivity,
+      weekdayStats,
+    );
+
+    return {
+      username: user.login,
+      avatarUrl: user.avatar_url,
+      year: 2025,
+      totalCommits,
+      longestStreak: maxStreak,
+      busiestDay,
+      topLanguages,
+      topRepo,
+      topRepos,
+      velocityData,
+      weekdayStats,
+      productivity,
+      archetype,
+      contributionBreakdown,
+      community: communityStats,
+    };
+  } catch (error) {
+    console.error("Error generating story:", error);
+    throw error;
+  }
+};
